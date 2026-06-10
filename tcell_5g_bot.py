@@ -1,6 +1,9 @@
 """
-Tcell 5G Campaign Bot
-Двуязычный бот (рус/тадж) для акции подключения 5G
+Tcell 5G Campaign Bot v3
+- Двуязычный (рус/тадж)
+- Меню кнопок для пользователей и админа
+- Исправлена пересылка фото через /pending
+- Данные хранятся надёжно
 """
 
 import logging
@@ -17,16 +20,19 @@ from telegram.ext import (
 )
 
 # ─────────────────────────────────────────────
-# НАСТРОЙКИ — заполни перед запуском
+# НАСТРОЙКИ
 # ─────────────────────────────────────────────
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")          # токен от @BotFather
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 ADMIN_IDS_RAW = os.environ.get("ADMIN_IDS", "123456789")
-ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_RAW.split(",")]                    # Telegram ID администраторов
-COVERAGE_MAP_FILE = "coverage_map.jpg"    # путь к картинке карты 5G покрытия
-DB_FILE = "participants.json"             # файл-база участников
+ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_RAW.split(",")]
+COVERAGE_MAP_FILE = "coverage_map.jpg"
+DB_FILE = "participants.json"
+
+# Дата розыгрыша — поменяй когда узнаешь
+RAFFLE_DATE = os.environ.get("RAFFLE_DATE", "01.08.2025")
 
 # ─────────────────────────────────────────────
-# СОСТОЯНИЯ РАЗГОВОРА
+# СОСТОЯНИЯ
 # ─────────────────────────────────────────────
 CHOOSE_LANG, WAIT_SCREENSHOT = range(2)
 
@@ -49,12 +55,11 @@ TEXTS = {
             "2. Выберите «Мобильная сеть» → «Тип сети»\n"
             "3. Выберите *5G / LTE / 3G / 2G*\n"
             "4. Убедитесь, что в статус-баре отображается значок *5G*\n"
-            "5. Сделайте скриншот экрана телефона с видимым значком 5G\n\n"
+            "5. Сделайте скриншот с видимым значком 5G\n\n"
             "📤 Отправьте скриншот прямо сюда!"
         ),
-        "wait_screenshot": "⏳ Жду ваш скриншот...",
         "got_screenshot": (
-            "✅ Скриншот получен! Передаю на проверку администратору.\n\n"
+            "✅ Скриншот получен! Передаю на проверку.\n\n"
             "Как только скриншот будет проверен, вы получите ваш уникальный номер участника. "
             "Обычно это занимает несколько минут."
         ),
@@ -72,18 +77,27 @@ TEXTS = {
             "Возможные причины:\n"
             "• На скриншоте не виден значок 5G\n"
             "• Скриншот нечёткий или повреждён\n\n"
-            "Пожалуйста, попробуйте ещё раз — отправьте новый скриншот 👇"
+            "Пожалуйста, отправьте новый скриншот 👇"
         ),
         "already_registered": (
             "ℹ️ Вы уже зарегистрированы в акции!\n\n"
             "Ваш номер участника: *#{number}*\n\n"
             "Следите за розыгрышем в нашем канале 🎁"
         ),
-        "pending": (
+        "pending_wait": (
             "⏳ Ваш скриншот уже на проверке у администратора.\n"
             "Пожалуйста, подождите немного."
         ),
         "error_photo": "❗ Пожалуйста, отправьте именно фото (скриншот), а не файл или текст.",
+        "raffle_info": "🎰 *Информация о розыгрыше*\n\n📅 Дата розыгрыша: *{date}*\n\n🎁 Призы будут объявлены на нашем канале.\nСледите за обновлениями!",
+        "my_number": "🔢 Ваш номер участника: *#{number}*\n\nУдачи в розыгрыше! 🍀",
+        "no_number": "❌ Вы ещё не зарегистрированы.\nНажмите /start чтобы участвовать.",
+        "menu_btn_raffle": "🎰 Когда розыгрыш?",
+        "menu_btn_number": "🔢 Мой номер",
+        "menu_btn_status": "📋 Мой статус",
+        "status_approved": "✅ Вы зарегистрированы! Номер: *#{number}*",
+        "status_pending": "⏳ Ваш скриншот на проверке. Ожидайте.",
+        "status_none": "❌ Вы ещё не участвуете. Нажмите /start",
     },
     "tj": {
         "welcome": (
@@ -99,14 +113,13 @@ TEXTS = {
             "1. Ба Танзимоти телефон равед\n"
             "2. «Шабакаи мобилӣ» → «Навъи шабака»-ро интихоб кунед\n"
             "3. *5G / LTE / 3G / 2G*-ро интихоб кунед\n"
-            "4. Боварӣ ҳосил кунед, ки дар қисми болои экран аломати *5G* намоён аст\n"
-            "5. Аз экрани телефонатон бо аломати 5G скриншот гиред\n\n"
+            "4. Боварӣ ҳосил кунед, ки аломати *5G* намоён аст\n"
+            "5. Аз экрани телефонатон скриншот гиред\n\n"
             "📤 Скриншотро ҳамин ҷо фиристед!"
         ),
-        "wait_screenshot": "⏳ Скриншоти шуморо интизорам...",
         "got_screenshot": (
-            "✅ Скриншот гирифта шуд! Барои тафтиш ба маъмур мефиристам.\n\n"
-            "Баъди тафтиши скриншот, рақами беназири иштирокчии шумо дода мешавад. "
+            "✅ Скриншот гирифта шуд! Барои тафтиш мефиристам.\n\n"
+            "Баъди тафтиш рақами беназири иштирокчии шумо дода мешавад. "
             "Одатан ин чанд дақиқа вақт мегирад."
         ),
         "approved": (
@@ -123,23 +136,32 @@ TEXTS = {
             "Сабабҳои эҳтимолӣ:\n"
             "• Дар скриншот аломати 5G намоён нест\n"
             "• Скриншот норавшан ё вайрон аст\n\n"
-            "Лутфан дубора кӯшиш кунед — скриншоти наверо фиристед 👇"
+            "Лутфан скриншоти наверо фиристед 👇"
         ),
         "already_registered": (
             "ℹ️ Шумо аллакай дар акция бақайд гирифта шудед!\n\n"
             "Рақами иштирокчии шумо: *#{number}*\n\n"
             "Қуръакаширо дар канали мо пайгирӣ кунед 🎁"
         ),
-        "pending": (
+        "pending_wait": (
             "⏳ Скриншоти шумо аллакай назди маъмур барои тафтиш аст.\n"
             "Лутфан каме интизор шавед."
         ),
         "error_photo": "❗ Лутфан акс (скриншот) фиристед, на файл ё матн.",
+        "raffle_info": "🎰 *Маълумот дар бораи қуръакашӣ*\n\n📅 Санаи қуръакашӣ: *{date}*\n\n🎁 Ҷоизаҳо дар канали мо эълон мешаванд.\nПайгирӣ кунед!",
+        "my_number": "🔢 Рақами иштирокчии шумо: *#{number}*\n\nДар қуръакашӣ бахт! 🍀",
+        "no_number": "❌ Шумо ҳанӯз бақайд гирифта нашудед.\n/start -ро пахш кунед.",
+        "menu_btn_raffle": "🎰 Қуръакашӣ кай?",
+        "menu_btn_number": "🔢 Рақами ман",
+        "menu_btn_status": "📋 Ҳолати ман",
+        "status_approved": "✅ Шумо бақайд гирифтед! Рақам: *#{number}*",
+        "status_pending": "⏳ Скриншоти шумо тафтиш мешавад. Интизор шавед.",
+        "status_none": "❌ Шумо иштирок намекунед. /start -ро пахш кунед",
     }
 }
 
 # ─────────────────────────────────────────────
-# БАЗА ДАННЫХ (JSON-файл)
+# БД
 # ─────────────────────────────────────────────
 
 def load_db() -> dict:
@@ -164,32 +186,55 @@ def get_next_number(db: dict) -> str:
 # ─────────────────────────────────────────────
 
 def lang_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
-            InlineKeyboardButton("🇹🇯 Тоҷикӣ", callback_data="lang_tj"),
-        ]
-    ])
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
+        InlineKeyboardButton("🇹🇯 Тоҷикӣ", callback_data="lang_tj"),
+    ]])
 
 
-def get_user_lang(context: ContextTypes.DEFAULT_TYPE) -> str:
-    return context.user_data.get("lang", "ru")
+def user_menu(lang: str):
+    """Меню кнопок для обычных пользователей"""
+    return ReplyKeyboardMarkup([
+        [KeyboardButton(TEXTS[lang]["menu_btn_raffle"])],
+        [KeyboardButton(TEXTS[lang]["menu_btn_number"]), KeyboardButton(TEXTS[lang]["menu_btn_status"])],
+    ], resize_keyboard=True)
 
 
-def t(context, key: str, **kwargs) -> str:
-    lang = get_user_lang(context)
+def admin_menu():
+    """Меню кнопок для администратора"""
+    return ReplyKeyboardMarkup([
+        ["📊 Статистика", "⏳ На проверке"],
+        ["📤 Рассылка", "📅 Изменить дату"],
+    ], resize_keyboard=True)
+
+
+def txt(lang: str, key: str, **kwargs) -> str:
     text = TEXTS[lang].get(key, TEXTS["ru"].get(key, key))
     for k, v in kwargs.items():
         text = text.replace(f"{{{k}}}", str(v))
     return text
 
 
+def get_lang(context) -> str:
+    return context.user_data.get("lang", "ru")
+
+
 # ─────────────────────────────────────────────
-# ХЕНДЛЕРЫ
+# ХЕНДЛЕРЫ — ПОЛЬЗОВАТЕЛЬ
 # ─────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Приветствие + выбор языка"""
+    user_id = str(update.effective_user.id)
+
+    # Если это админ — показываем админ-меню
+    if update.effective_user.id in ADMIN_IDS:
+        await update.message.reply_text(
+            "👨‍💼 *Панель администратора Tcell 5G*\n\nВыберите действие:",
+            parse_mode="Markdown",
+            reply_markup=admin_menu()
+        )
+        return ConversationHandler.END
+
     await update.message.reply_text(
         "🌐 Выберите язык / Забонро интихоб кунед:",
         reply_markup=lang_keyboard()
@@ -198,135 +243,270 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка выбора языка"""
     query = update.callback_query
     await query.answer()
 
     lang = query.data.replace("lang_", "")
     context.user_data["lang"] = lang
-
     user_id = str(query.from_user.id)
     db = load_db()
 
-    # Уже зарегистрирован и подтверждён
+    # Уже подтверждён
     if user_id in db["participants"] and db["participants"][user_id].get("approved"):
         number = db["participants"][user_id]["number"]
         await query.edit_message_text(
-            t(context, "already_registered", number=number),
+            txt(lang, "already_registered", number=number),
             parse_mode="Markdown"
         )
+        await query.message.reply_text("Выберите действие:", reply_markup=user_menu(lang))
         return ConversationHandler.END
 
-    # Уже отправил скриншот — ожидает проверки
+    # Ждёт проверки
     if user_id in db["pending"]:
-        await query.edit_message_text(t(context, "pending"))
+        await query.edit_message_text(txt(lang, "pending_wait"))
         return ConversationHandler.END
 
-    # Приветственное сообщение
-    await query.edit_message_text(t(context, "welcome"))
+    # Новый пользователь
+    await query.edit_message_text(txt(lang, "welcome"))
 
-    # Карта покрытия
     try:
         with open(COVERAGE_MAP_FILE, "rb") as photo:
             await query.message.reply_photo(
                 photo=photo,
-                caption=t(context, "map_caption"),
+                caption=txt(lang, "map_caption"),
                 parse_mode="Markdown"
             )
     except FileNotFoundError:
-        # Если файл карты не найден — шлём текст-заглушку
-        await query.message.reply_text(
-            t(context, "map_caption"),
-            parse_mode="Markdown"
-        )
+        await query.message.reply_text(txt(lang, "map_caption"), parse_mode="Markdown")
 
-    await query.message.reply_text(t(context, "wait_screenshot"))
     return WAIT_SCREENSHOT
 
 
 async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получение скриншота от пользователя"""
     if not update.message.photo:
-        await update.message.reply_text(t(context, "error_photo"))
+        lang = get_lang(context)
+        await update.message.reply_text(txt(lang, "error_photo"))
         return WAIT_SCREENSHOT
 
     user = update.message.from_user
     user_id = str(user.id)
+    lang = context.user_data.get("lang", "ru")
     db = load_db()
 
-    # Двойная проверка
     if user_id in db["participants"] and db["participants"][user_id].get("approved"):
         number = db["participants"][user_id]["number"]
         await update.message.reply_text(
-            t(context, "already_registered", number=number),
+            txt(lang, "already_registered", number=number),
             parse_mode="Markdown"
         )
         return ConversationHandler.END
 
     if user_id in db["pending"]:
-        await update.message.reply_text(t(context, "pending"))
+        await update.message.reply_text(txt(lang, "pending_wait"))
         return WAIT_SCREENSHOT
 
-    # Язык берём из context, если нет — из pending в DB, иначе ru по умолчанию
-    lang = context.user_data.get("lang") or "ru"
-    file_id = update.message.photo[-1].file_id
+    # Скачиваем фото и сохраняем как байты в базу
+    photo_file = await update.message.photo[-1].get_file()
+    photo_bytes = await photo_file.download_as_bytearray()
+    photo_b64 = __import__("base64").b64encode(photo_bytes).decode()
+
     db["pending"][user_id] = {
         "user_id": user_id,
         "username": user.username or "",
         "full_name": user.full_name,
         "lang": lang,
-        "file_id": file_id,
+        "file_id": update.message.photo[-1].file_id,
+        "photo_b64": photo_b64,
         "timestamp": datetime.now().isoformat(),
     }
     save_db(db)
 
-    await update.message.reply_text(t(context, "got_screenshot"))
+    await update.message.reply_text(
+        txt(lang, "got_screenshot"),
+        reply_markup=user_menu(lang)
+    )
 
-    # Пересылаем каждому админу
-    admin_keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{user_id}"),
-            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{user_id}"),
-        ]
-    ])
-
-    admin_caption = (
+    # Отправляем админам — используем скачанные байты
+    kbd = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{user_id}"),
+        InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{user_id}"),
+    ]])
+    caption = (
         f"📸 *Новый скриншот на проверку*\n\n"
-        f"👤 Пользователь: {user.full_name}\n"
+        f"👤 {user.full_name}\n"
         f"🆔 ID: `{user_id}`\n"
-        f"📛 Username: @{user.username or 'нет'}\n"
+        f"📛 @{user.username or 'нет'}\n"
         f"🌐 Язык: {'Русский' if lang == 'ru' else 'Тоҷикӣ'}\n"
-        f"🕐 Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        f"🕐 {datetime.now().strftime('%d.%m.%Y %H:%M')}"
     )
 
     for admin_id in ADMIN_IDS:
         try:
             await context.bot.send_photo(
                 chat_id=admin_id,
-                photo=file_id,
-                caption=admin_caption,
+                photo=__import__("io").BytesIO(photo_bytes),
+                caption=caption,
                 parse_mode="Markdown",
-                reply_markup=admin_keyboard
+                reply_markup=kbd
             )
-            logging.info(f"Скриншот от {user_id} успешно отправлен админу {admin_id}")
         except Exception as e:
-            logging.error(f"ОШИБКА отправки скриншота админу {admin_id}: {type(e).__name__}: {e}")
-            # Пробуем отправить хотя бы текстовое уведомление
-            try:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=f"⚠️ Не удалось отправить фото, но скриншот сохранён!\n\n{admin_caption}\n\nFile ID: `{file_id}`",
-                    parse_mode="Markdown",
-                    reply_markup=admin_keyboard
-                )
-            except Exception as e2:
-                logging.error(f"ОШИБКА даже текстового уведомления админу {admin_id}: {e2}")
+            logging.error(f"Ошибка отправки фото админу {admin_id}: {e}")
 
     return WAIT_SCREENSHOT
 
 
+# ─────────────────────────────────────────────
+# ХЕНДЛЕРЫ — МЕНЮ ПОЛЬЗОВАТЕЛЯ (кнопки)
+# ─────────────────────────────────────────────
+
+async def handle_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user_id = str(update.effective_user.id)
+    lang = get_lang(context)
+    db = load_db()
+
+    raffle_btns = [TEXTS["ru"]["menu_btn_raffle"], TEXTS["tj"]["menu_btn_raffle"]]
+    number_btns = [TEXTS["ru"]["menu_btn_number"], TEXTS["tj"]["menu_btn_number"]]
+    status_btns = [TEXTS["ru"]["menu_btn_status"], TEXTS["tj"]["menu_btn_status"]]
+
+    if text in raffle_btns:
+        await update.message.reply_text(
+            txt(lang, "raffle_info", date=RAFFLE_DATE),
+            parse_mode="Markdown"
+        )
+
+    elif text in number_btns:
+        if user_id in db["participants"] and db["participants"][user_id].get("approved"):
+            number = db["participants"][user_id]["number"]
+            await update.message.reply_text(txt(lang, "my_number", number=number), parse_mode="Markdown")
+        else:
+            await update.message.reply_text(txt(lang, "no_number"))
+
+    elif text in status_btns:
+        if user_id in db["participants"] and db["participants"][user_id].get("approved"):
+            number = db["participants"][user_id]["number"]
+            await update.message.reply_text(txt(lang, "status_approved", number=number), parse_mode="Markdown")
+        elif user_id in db["pending"]:
+            await update.message.reply_text(txt(lang, "status_pending"))
+        else:
+            await update.message.reply_text(txt(lang, "status_none"))
+
+
+# ─────────────────────────────────────────────
+# ХЕНДЛЕРЫ — МЕНЮ АДМИНА (кнопки)
+# ─────────────────────────────────────────────
+
+async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user_id = update.effective_user.id
+
+    if user_id not in ADMIN_IDS:
+        return
+
+    db = load_db()
+
+    if text == "📊 Статистика":
+        total = len(db["participants"])
+        pending = len(db["pending"])
+        await update.message.reply_text(
+            f"📊 *Статистика акции Tcell 5G*\n\n"
+            f"✅ Подтверждённых участников: *{total}*\n"
+            f"⏳ Ожидают проверки: *{pending}*\n"
+            f"🔢 Следующий номер: *{str(db['counter'] + 1).zfill(3)}*\n"
+            f"📅 Дата розыгрыша: *{RAFFLE_DATE}*",
+            parse_mode="Markdown"
+        )
+
+    elif text == "⏳ На проверке":
+        if not db["pending"]:
+            await update.message.reply_text("✅ Нет скриншотов на проверке.")
+            return
+        await update.message.reply_text(f"⏳ Скриншотов на проверке: {len(db['pending'])}. Пересылаю...")
+        import base64, io
+        for uid, info in db["pending"].items():
+            kbd = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{uid}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{uid}"),
+            ]])
+            caption = (
+                f"📸 *Скриншот на проверку*\n\n"
+                f"👤 {info['full_name']}\n"
+                f"🆔 ID: `{uid}`\n"
+                f"📛 @{info.get('username') or 'нет'}\n"
+                f"🌐 Язык: {'Русский' if info.get('lang') == 'ru' else 'Тоҷикӣ'}\n"
+                f"🕐 {info.get('timestamp', '')[:16].replace('T', ' ')}"
+            )
+            try:
+                photo_bytes = base64.b64decode(info["photo_b64"])
+                await context.bot.send_photo(
+                    chat_id=user_id,
+                    photo=io.BytesIO(photo_bytes),
+                    caption=caption,
+                    parse_mode="Markdown",
+                    reply_markup=kbd
+                )
+            except Exception as e:
+                await update.message.reply_text(
+                    f"⚠️ Не удалось показать фото для {info['full_name']}\n\n{caption}",
+                    parse_mode="Markdown",
+                    reply_markup=kbd
+                )
+
+    elif text == "📤 Рассылка":
+        context.user_data["waiting_broadcast"] = True
+        await update.message.reply_text(
+            "✏️ Напишите текст для рассылки всем участникам.\n\n"
+            "Для отмены напишите /cancel"
+        )
+
+    elif text == "📅 Изменить дату":
+        context.user_data["waiting_date"] = True
+        await update.message.reply_text(
+            f"📅 Текущая дата розыгрыша: *{RAFFLE_DATE}*\n\n"
+            "Напишите новую дату в формате ДД.ММ.ГГГГ\n"
+            "Например: 15.07.2025\n\n"
+            "Для отмены напишите /cancel",
+            parse_mode="Markdown"
+        )
+
+
+async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка текстового ввода от админа (рассылка, дата)"""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    if context.user_data.get("waiting_broadcast"):
+        context.user_data.pop("waiting_broadcast")
+        message_text = update.message.text
+        db = load_db()
+        success, failed = 0, 0
+        for uid in db["participants"]:
+            try:
+                await context.bot.send_message(chat_id=int(uid), text=message_text)
+                success += 1
+            except Exception:
+                failed += 1
+        await update.message.reply_text(
+            f"📤 Рассылка завершена.\n✅ Отправлено: {success}\n❌ Ошибок: {failed}",
+            reply_markup=admin_menu()
+        )
+
+    elif context.user_data.get("waiting_date"):
+        context.user_data.pop("waiting_date")
+        global RAFFLE_DATE
+        RAFFLE_DATE = update.message.text.strip()
+        await update.message.reply_text(
+            f"✅ Дата розыгрыша обновлена: *{RAFFLE_DATE}*",
+            parse_mode="Markdown",
+            reply_markup=admin_menu()
+        )
+
+
+# ─────────────────────────────────────────────
+# ХЕНДЛЕР — РЕШЕНИЕ АДМИНА (одобрить/отклонить)
+# ─────────────────────────────────────────────
+
 async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Админ одобряет или отклоняет скриншот"""
     query = update.callback_query
     admin_id = query.from_user.id
 
@@ -340,44 +520,42 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if target_user_id not in db["pending"]:
         await query.edit_message_caption(
-            caption=query.message.caption + "\n\n⚠️ Уже обработано другим администратором.",
+            caption=(query.message.caption or "") + "\n\n⚠️ Уже обработано.",
             parse_mode="Markdown"
         )
         return
 
     pending_info = db["pending"].pop(target_user_id)
     lang = pending_info.get("lang", "ru")
-    context.user_data["lang"] = lang  # для t()
 
     if action == "approve":
         number = get_next_number(db)
         db["participants"][target_user_id] = {
-            **pending_info,
+            **{k: v for k, v in pending_info.items() if k != "photo_b64"},
             "number": number,
             "approved": True,
             "approved_at": datetime.now().isoformat(),
         }
         save_db(db)
 
-        # Уведомляем пользователя
         msg = TEXTS[lang]["approved"].replace("{number}", number)
         try:
             await context.bot.send_message(
                 chat_id=int(target_user_id),
                 text=msg,
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                reply_markup=user_menu(lang)
             )
         except Exception as e:
-            logging.warning(f"Не удалось уведомить пользователя {target_user_id}: {e}")
+            logging.warning(f"Не удалось уведомить пользователя: {e}")
 
         await query.edit_message_caption(
-            caption=query.message.caption + f"\n\n✅ *Одобрено* администратором. Номер участника: *#{number}*",
+            caption=(query.message.caption or "") + f"\n\n✅ *Одобрено.* Номер: *#{number}*",
             parse_mode="Markdown"
         )
 
     elif action == "reject":
         save_db(db)
-
         msg = TEXTS[lang]["rejected"]
         try:
             await context.bot.send_message(
@@ -386,100 +564,21 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
         except Exception as e:
-            logging.warning(f"Не удалось уведомить пользователя {target_user_id}: {e}")
+            logging.warning(f"Не удалось уведомить пользователя: {e}")
 
         await query.edit_message_caption(
-            caption=query.message.caption + "\n\n❌ *Отклонено* администратором.",
+            caption=(query.message.caption or "") + "\n\n❌ *Отклонено.*",
             parse_mode="Markdown"
         )
 
 
-async def admin_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать и переслать все ожидающие скриншоты /pending"""
-    if update.effective_user.id not in ADMIN_IDS:
-        return
-
-    db = load_db()
-    if not db["pending"]:
-        await update.message.reply_text("✅ Нет скриншотов на проверке.")
-        return
-
-    await update.message.reply_text(f"⏳ Скриншотов на проверке: {len(db['pending'])}. Пересылаю...")
-
-    for uid, info in db["pending"].items():
-        kbd = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{uid}"),
-            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{uid}"),
-        ]])
-        caption = (
-            f"📸 *Скриншот на проверку*\n\n"
-            f"👤 {info['full_name']}\n"
-            f"🆔 ID: `{uid}`\n"
-            f"📛 @{info.get('username') or 'нет'}\n"
-            f"🌐 Язык: {'Русский' if info.get('lang') == 'ru' else 'Тоҷикӣ'}\n"
-            f"🕐 {info.get('timestamp', '')[:16].replace('T', ' ')}"
-        )
-        try:
-            await context.bot.send_photo(
-                chat_id=update.effective_user.id,
-                photo=info["file_id"],
-                caption=caption,
-                parse_mode="Markdown",
-                reply_markup=kbd
-            )
-        except Exception as e:
-            await update.message.reply_text(
-                f"⚠️ Не удалось показать фото для ID {uid}\n\n{caption}",
-                parse_mode="Markdown",
-                reply_markup=kbd
-            )
-
-
-async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Статистика для администратора /stats"""
-    if update.effective_user.id not in ADMIN_IDS:
-        return
-
-    db = load_db()
-    total = len(db["participants"])
-    pending = len(db["pending"])
-
-    await update.message.reply_text(
-        f"📊 *Статистика акции Tcell 5G*\n\n"
-        f"✅ Подтверждённых участников: *{total}*\n"
-        f"⏳ Ожидают проверки: *{pending}*\n"
-        f"🔢 Следующий номер: *{str(db['counter'] + 1).zfill(3)}*",
-        parse_mode="Markdown"
-    )
-
-
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Рассылка всем участникам /broadcast текст"""
-    if update.effective_user.id not in ADMIN_IDS:
-        return
-
-    if not context.args:
-        await update.message.reply_text("Использование: /broadcast <текст сообщения>")
-        return
-
-    message_text = " ".join(context.args)
-    db = load_db()
-    success, failed = 0, 0
-
-    for uid in db["participants"]:
-        try:
-            await context.bot.send_message(chat_id=int(uid), text=message_text)
-            success += 1
-        except Exception:
-            failed += 1
-
-    await update.message.reply_text(
-        f"📤 Рассылка завершена.\n✅ Отправлено: {success}\n❌ Ошибок: {failed}"
-    )
-
-
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Операция отменена. Нажмите /start чтобы начать заново.")
+    context.user_data.pop("waiting_broadcast", None)
+    context.user_data.pop("waiting_date", None)
+    await update.message.reply_text(
+        "Отменено. Нажмите /start чтобы начать заново.",
+        reply_markup=admin_menu() if update.effective_user.id in ADMIN_IDS else ReplyKeyboardMarkup([[]], resize_keyboard=True)
+    )
     return ConversationHandler.END
 
 
@@ -501,20 +600,28 @@ def main():
             CHOOSE_LANG: [CallbackQueryHandler(choose_language, pattern="^lang_")],
             WAIT_SCREENSHOT: [
                 MessageHandler(filters.PHOTO, receive_screenshot),
-                MessageHandler(filters.ALL & ~filters.COMMAND, receive_screenshot),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_screenshot),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         per_user=True,
     )
 
+    # Определяем кнопки меню пользователя для фильтрации
+    all_user_btns = (
+        [v["menu_btn_raffle"] for v in TEXTS.values()] +
+        [v["menu_btn_number"] for v in TEXTS.values()] +
+        [v["menu_btn_status"] for v in TEXTS.values()]
+    )
+    admin_btns = ["📊 Статистика", "⏳ На проверке", "📤 Рассылка", "📅 Изменить дату"]
+
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(admin_decision, pattern="^(approve|reject)_"))
-    app.add_handler(CommandHandler("stats", admin_stats))
-    app.add_handler(CommandHandler("pending", admin_pending))
-    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("|".join(all_user_btns)), handle_user_menu))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("|".join(admin_btns)), handle_admin_menu))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_input))
 
-    print("🤖 Бот Tcell 5G запущен!")
+    print("🤖 Бот Tcell 5G v3 запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
