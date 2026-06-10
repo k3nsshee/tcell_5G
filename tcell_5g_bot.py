@@ -435,19 +435,39 @@ async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📛 @{info.get('username') or 'нет'}\n"
                 f"🌐 Язык: {'Русский' if info.get('lang') == 'ru' else 'Тоҷикӣ'}\n"
                 f"🕐 {info.get('timestamp', '')[:16].replace('T', ' ')}"
+                f"🕐 {info.get('timestamp', '')[:16].replace('T', ' ')}"
             )
-            try:
-                photo_bytes = base64.b64decode(info["photo_b64"])
-                await context.bot.send_photo(
-                    chat_id=user_id,
-                    photo=io.BytesIO(photo_bytes),
-                    caption=caption,
-                    parse_mode="Markdown",
-                    reply_markup=kbd
-                )
-            except Exception as e:
+            # Способ 1: байты (новые записи)
+            if info.get("photo_b64"):
+                try:
+                    photo_bytes = base64.b64decode(info["photo_b64"])
+                    await context.bot.send_photo(
+                        chat_id=user_id,
+                        photo=io.BytesIO(photo_bytes),
+                        caption=caption,
+                        parse_mode="Markdown",
+                        reply_markup=kbd
+                    )
+                    sent = True
+                except Exception as e:
+                    logging.warning(f"photo_b64 не сработал для {uid}: {e}")
+            # Способ 2: file_id (старые записи)
+            if not sent and info.get("file_id"):
+                try:
+                    await context.bot.send_photo(
+                        chat_id=user_id,
+                        photo=info["file_id"],
+                        caption=caption,
+                        parse_mode="Markdown",
+                        reply_markup=kbd
+                    )
+                    sent = True
+                except Exception as e:
+                    logging.warning(f"file_id не сработал для {uid}: {e}")
+            # Способ 3: только текст
+            if not sent:
                 await update.message.reply_text(
-                    f"⚠️ Не удалось показать фото для {info['full_name']}\n\n{caption}",
+                    f"📸 Фото недоступно (старая запись)\n\n{caption}",
                     parse_mode="Markdown",
                     reply_markup=kbd
                 )
