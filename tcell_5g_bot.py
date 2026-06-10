@@ -19,8 +19,9 @@ from telegram.ext import (
 # ─────────────────────────────────────────────
 # НАСТРОЙКИ — заполни перед запуском
 # ─────────────────────────────────────────────
-BOT_TOKEN = "8996137532:AAFK4n4MxYji5sXPWgyAxlPzs4mjEHXAkfI"         # токен от @BotFather
-ADMIN_IDS = [1461029743]                    # Telegram ID администраторов
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")          # токен от @BotFather
+ADMIN_IDS_RAW = os.environ.get("ADMIN_IDS", "123456789")
+ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_RAW.split(",")]                    # Telegram ID администраторов
 COVERAGE_MAP_FILE = "coverage_map.jpg"    # путь к картинке карты 5G покрытия
 DB_FILE = "participants.json"             # файл-база участников
 
