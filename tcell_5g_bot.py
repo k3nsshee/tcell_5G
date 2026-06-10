@@ -267,8 +267,8 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(t(context, "pending"))
         return WAIT_SCREENSHOT
 
-    # Сохраняем в pending
-    lang = get_user_lang(context)
+    # Язык берём из context, если нет — из pending в DB, иначе ru по умолчанию
+    lang = context.user_data.get("lang") or "ru"
     file_id = update.message.photo[-1].file_id
     db["pending"][user_id] = {
         "user_id": user_id,
@@ -308,8 +308,19 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 parse_mode="Markdown",
                 reply_markup=admin_keyboard
             )
+            logging.info(f"Скриншот от {user_id} успешно отправлен админу {admin_id}")
         except Exception as e:
-            logging.warning(f"Не удалось отправить сообщение админу {admin_id}: {e}")
+            logging.error(f"ОШИБКА отправки скриншота админу {admin_id}: {type(e).__name__}: {e}")
+            # Пробуем отправить хотя бы текстовое уведомление
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"⚠️ Не удалось отправить фото, но скриншот сохранён!\n\n{admin_caption}\n\nFile ID: `{file_id}`",
+                    parse_mode="Markdown",
+                    reply_markup=admin_keyboard
+                )
+            except Exception as e2:
+                logging.error(f"ОШИБКА даже текстового уведомления админу {admin_id}: {e2}")
 
     return WAIT_SCREENSHOT
 
@@ -381,6 +392,47 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=query.message.caption + "\n\n❌ *Отклонено* администратором.",
             parse_mode="Markdown"
         )
+
+
+async def admin_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать и переслать все ожидающие скриншоты /pending"""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    db = load_db()
+    if not db["pending"]:
+        await update.message.reply_text("✅ Нет скриншотов на проверке.")
+        return
+
+    await update.message.reply_text(f"⏳ Скриншотов на проверке: {len(db['pending'])}. Пересылаю...")
+
+    for uid, info in db["pending"].items():
+        kbd = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{uid}"),
+            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{uid}"),
+        ]])
+        caption = (
+            f"📸 *Скриншот на проверку*\n\n"
+            f"👤 {info['full_name']}\n"
+            f"🆔 ID: `{uid}`\n"
+            f"📛 @{info.get('username') or 'нет'}\n"
+            f"🌐 Язык: {'Русский' if info.get('lang') == 'ru' else 'Тоҷикӣ'}\n"
+            f"🕐 {info.get('timestamp', '')[:16].replace('T', ' ')}"
+        )
+        try:
+            await context.bot.send_photo(
+                chat_id=update.effective_user.id,
+                photo=info["file_id"],
+                caption=caption,
+                parse_mode="Markdown",
+                reply_markup=kbd
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                f"⚠️ Не удалось показать фото для ID {uid}\n\n{caption}",
+                parse_mode="Markdown",
+                reply_markup=kbd
+            )
 
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -459,6 +511,7 @@ def main():
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(admin_decision, pattern="^(approve|reject)_"))
     app.add_handler(CommandHandler("stats", admin_stats))
+    app.add_handler(CommandHandler("pending", admin_pending))
     app.add_handler(CommandHandler("broadcast", broadcast))
 
     print("🤖 Бот Tcell 5G запущен!")
