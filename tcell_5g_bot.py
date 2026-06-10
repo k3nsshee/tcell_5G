@@ -1,35 +1,45 @@
 """
-Tcell 5G Campaign Bot v3
+Tcell 5G Campaign Bot — Final
 - Двуязычный (рус/тадж)
-- Меню кнопок для пользователей и админа
-- Исправлена пересылка фото через /pending
-- Данные хранятся надёжно
+- asyncio.Lock для безопасной параллельной работы
+- PicklePersistence — запоминает состояние после перезапуска
+- Тройной fallback для пересылки фото
+- Дата розыгрыша хранится в БД
+- python-dotenv для локальной разработки
 """
 
+import asyncio
 import logging
 import json
 import os
 from datetime import datetime
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup, KeyboardButton
+    ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters, ConversationHandler
+    ContextTypes, filters, ConversationHandler, PicklePersistence
 )
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # ─────────────────────────────────────────────
 # НАСТРОЙКИ
 # ─────────────────────────────────────────────
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-ADMIN_IDS_RAW = os.environ.get("ADMIN_IDS", "123456789")
-ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_RAW.split(",")]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+ADMIN_IDS = [int(x.strip()) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()]
 COVERAGE_MAP_FILE = "coverage_map.jpg"
 DB_FILE = "participants.json"
+PERSISTENCE_FILE = "bot_persistence.pkl"
+DEFAULT_RAFFLE_DATE = os.environ.get("RAFFLE_DATE", "01.08.2025")
 
-# Дата розыгрыша — поменяй когда узнаешь
-RAFFLE_DATE = os.environ.get("RAFFLE_DATE", "01.08.2025")
+# Лок для безопасной работы с DB при параллельных запросах
+db_lock = asyncio.Lock()
 
 # ─────────────────────────────────────────────
 # СОСТОЯНИЯ
@@ -167,8 +177,10 @@ TEXTS = {
 def load_db() -> dict:
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"participants": {}, "counter": 0, "pending": {}}
+            db = json.load(f)
+        db.setdefault("raffle_date", DEFAULT_RAFFLE_DATE)
+        return db
+    return {"participants": {}, "counter": 0, "pending": {}, "raffle_date": DEFAULT_RAFFLE_DATE}
 
 
 def save_db(db: dict):
@@ -193,7 +205,6 @@ def lang_keyboard():
 
 
 def user_menu(lang: str):
-    """Меню кнопок для обычных пользователей"""
     return ReplyKeyboardMarkup([
         [KeyboardButton(TEXTS[lang]["menu_btn_raffle"])],
         [KeyboardButton(TEXTS[lang]["menu_btn_number"]), KeyboardButton(TEXTS[lang]["menu_btn_status"])],
@@ -201,7 +212,6 @@ def user_menu(lang: str):
 
 
 def admin_menu():
-    """Меню кнопок для администратора"""
     return ReplyKeyboardMarkup([
         ["📊 Статистика", "⏳ На проверке"],
         ["📤 Рассылка", "📅 Изменить дату"],
@@ -224,9 +234,6 @@ def get_lang(context) -> str:
 # ─────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = str(update.effective_user.id)
-
-    # Если это админ — показываем админ-меню
     if update.effective_user.id in ADMIN_IDS:
         await update.message.reply_text(
             "👨‍💼 *Панель администратора Tcell 5G*\n\nВыберите действие:",
@@ -249,24 +256,23 @@ async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     lang = query.data.replace("lang_", "")
     context.user_data["lang"] = lang
     user_id = str(query.from_user.id)
-    db = load_db()
 
-    # Уже подтверждён
-    if user_id in db["participants"] and db["participants"][user_id].get("approved"):
-        number = db["participants"][user_id]["number"]
-        await query.edit_message_text(
-            txt(lang, "already_registered", number=number),
-            parse_mode="Markdown"
-        )
-        await query.message.reply_text("Выберите действие:", reply_markup=user_menu(lang))
-        return ConversationHandler.END
+    async with db_lock:
+        db = load_db()
 
-    # Ждёт проверки
-    if user_id in db["pending"]:
-        await query.edit_message_text(txt(lang, "pending_wait"))
-        return ConversationHandler.END
+        if user_id in db["participants"] and db["participants"][user_id].get("approved"):
+            number = db["participants"][user_id]["number"]
+            await query.edit_message_text(
+                txt(lang, "already_registered", number=number),
+                parse_mode="Markdown"
+            )
+            await query.message.reply_text("Выберите действие:", reply_markup=user_menu(lang))
+            return ConversationHandler.END
 
-    # Новый пользователь
+        if user_id in db["pending"]:
+            await query.edit_message_text(txt(lang, "pending_wait"))
+            return ConversationHandler.END
+
     await query.edit_message_text(txt(lang, "welcome"))
 
     try:
@@ -291,42 +297,44 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.message.from_user
     user_id = str(user.id)
     lang = context.user_data.get("lang", "ru")
-    db = load_db()
 
-    if user_id in db["participants"] and db["participants"][user_id].get("approved"):
-        number = db["participants"][user_id]["number"]
-        await update.message.reply_text(
-            txt(lang, "already_registered", number=number),
-            parse_mode="Markdown"
-        )
-        return ConversationHandler.END
+    async with db_lock:
+        db = load_db()
 
-    if user_id in db["pending"]:
-        await update.message.reply_text(txt(lang, "pending_wait"))
-        return WAIT_SCREENSHOT
+        if user_id in db["participants"] and db["participants"][user_id].get("approved"):
+            number = db["participants"][user_id]["number"]
+            await update.message.reply_text(
+                txt(lang, "already_registered", number=number),
+                parse_mode="Markdown"
+            )
+            return ConversationHandler.END
 
-    # Скачиваем фото и сохраняем как байты в базу
-    photo_file = await update.message.photo[-1].get_file()
-    photo_bytes = await photo_file.download_as_bytearray()
-    photo_b64 = __import__("base64").b64encode(photo_bytes).decode()
+        if user_id in db["pending"]:
+            await update.message.reply_text(txt(lang, "pending_wait"))
+            return WAIT_SCREENSHOT
 
-    db["pending"][user_id] = {
-        "user_id": user_id,
-        "username": user.username or "",
-        "full_name": user.full_name,
-        "lang": lang,
-        "file_id": update.message.photo[-1].file_id,
-        "photo_b64": photo_b64,
-        "timestamp": datetime.now().isoformat(),
-    }
-    save_db(db)
+        # Скачиваем фото и сохраняем как байты
+        photo_file = await update.message.photo[-1].get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        photo_b64 = __import__("base64").b64encode(photo_bytes).decode()
+
+        db["pending"][user_id] = {
+            "user_id": user_id,
+            "username": user.username or "",
+            "full_name": user.full_name,
+            "lang": lang,
+            "file_id": update.message.photo[-1].file_id,
+            "photo_b64": photo_b64,
+            "timestamp": datetime.now().isoformat(),
+        }
+        save_db(db)
 
     await update.message.reply_text(
         txt(lang, "got_screenshot"),
         reply_markup=user_menu(lang)
     )
 
-    # Отправляем админам — используем скачанные байты
+    # Отправляем админам
     kbd = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{user_id}"),
         InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{user_id}"),
@@ -356,7 +364,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ─────────────────────────────────────────────
-# ХЕНДЛЕРЫ — МЕНЮ ПОЛЬЗОВАТЕЛЯ (кнопки)
+# ХЕНДЛЕРЫ — МЕНЮ ПОЛЬЗОВАТЕЛЯ
 # ─────────────────────────────────────────────
 
 async def handle_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -371,17 +379,15 @@ async def handle_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text in raffle_btns:
         await update.message.reply_text(
-            txt(lang, "raffle_info", date=RAFFLE_DATE),
+            txt(lang, "raffle_info", date=db.get("raffle_date", DEFAULT_RAFFLE_DATE)),
             parse_mode="Markdown"
         )
-
     elif text in number_btns:
         if user_id in db["participants"] and db["participants"][user_id].get("approved"):
             number = db["participants"][user_id]["number"]
             await update.message.reply_text(txt(lang, "my_number", number=number), parse_mode="Markdown")
         else:
             await update.message.reply_text(txt(lang, "no_number"))
-
     elif text in status_btns:
         if user_id in db["participants"] and db["participants"][user_id].get("approved"):
             number = db["participants"][user_id]["number"]
@@ -393,7 +399,7 @@ async def handle_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─────────────────────────────────────────────
-# ХЕНДЛЕРЫ — МЕНЮ АДМИНА (кнопки)
+# ХЕНДЛЕРЫ — МЕНЮ АДМИНА
 # ─────────────────────────────────────────────
 
 async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -413,7 +419,7 @@ async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Подтверждённых участников: *{total}*\n"
             f"⏳ Ожидают проверки: *{pending}*\n"
             f"🔢 Следующий номер: *{str(db['counter'] + 1).zfill(3)}*\n"
-            f"📅 Дата розыгрыша: *{RAFFLE_DATE}*",
+            f"📅 Дата розыгрыша: *{db.get('raffle_date', DEFAULT_RAFFLE_DATE)}*",
             parse_mode="Markdown"
         )
 
@@ -421,7 +427,9 @@ async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not db["pending"]:
             await update.message.reply_text("✅ Нет скриншотов на проверке.")
             return
+
         await update.message.reply_text(f"⏳ Скриншотов на проверке: {len(db['pending'])}. Пересылаю...")
+
         import base64, io
         for uid, info in db["pending"].items():
             kbd = InlineKeyboardMarkup([[
@@ -435,8 +443,9 @@ async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📛 @{info.get('username') or 'нет'}\n"
                 f"🌐 Язык: {'Русский' if info.get('lang') == 'ru' else 'Тоҷикӣ'}\n"
                 f"🕐 {info.get('timestamp', '')[:16].replace('T', ' ')}"
-                f"🕐 {info.get('timestamp', '')[:16].replace('T', ' ')}"
             )
+            sent = False
+
             # Способ 1: байты (новые записи)
             if info.get("photo_b64"):
                 try:
@@ -451,6 +460,7 @@ async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     sent = True
                 except Exception as e:
                     logging.warning(f"photo_b64 не сработал для {uid}: {e}")
+
             # Способ 2: file_id (старые записи)
             if not sent and info.get("file_id"):
                 try:
@@ -464,7 +474,8 @@ async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     sent = True
                 except Exception as e:
                     logging.warning(f"file_id не сработал для {uid}: {e}")
-            # Способ 3: только текст
+
+            # Способ 3: только текст с кнопками
             if not sent:
                 await update.message.reply_text(
                     f"📸 Фото недоступно (старая запись)\n\n{caption}",
@@ -481,8 +492,9 @@ async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text == "📅 Изменить дату":
         context.user_data["waiting_date"] = True
+        current = db.get("raffle_date", DEFAULT_RAFFLE_DATE)
         await update.message.reply_text(
-            f"📅 Текущая дата розыгрыша: *{RAFFLE_DATE}*\n\n"
+            f"📅 Текущая дата розыгрыша: *{current}*\n\n"
             "Напишите новую дату в формате ДД.ММ.ГГГГ\n"
             "Например: 15.07.2025\n\n"
             "Для отмены напишите /cancel",
@@ -491,7 +503,6 @@ async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка текстового ввода от админа (рассылка, дата)"""
     if update.effective_user.id not in ADMIN_IDS:
         return
 
@@ -513,17 +524,20 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     elif context.user_data.get("waiting_date"):
         context.user_data.pop("waiting_date")
-        global RAFFLE_DATE
-        RAFFLE_DATE = update.message.text.strip()
+        new_date = update.message.text.strip()
+        async with db_lock:
+            db = load_db()
+            db["raffle_date"] = new_date
+            save_db(db)
         await update.message.reply_text(
-            f"✅ Дата розыгрыша обновлена: *{RAFFLE_DATE}*",
+            f"✅ Дата розыгрыша обновлена: *{new_date}*",
             parse_mode="Markdown",
             reply_markup=admin_menu()
         )
 
 
 # ─────────────────────────────────────────────
-# ХЕНДЛЕР — РЕШЕНИЕ АДМИНА (одобрить/отклонить)
+# ХЕНДЛЕР — РЕШЕНИЕ АДМИНА
 # ─────────────────────────────────────────────
 
 async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -536,28 +550,33 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.answer()
     action, target_user_id = query.data.split("_", 1)
-    db = load_db()
 
-    if target_user_id not in db["pending"]:
-        await query.edit_message_caption(
-            caption=(query.message.caption or "") + "\n\n⚠️ Уже обработано.",
-            parse_mode="Markdown"
-        )
-        return
+    async with db_lock:
+        db = load_db()
 
-    pending_info = db["pending"].pop(target_user_id)
-    lang = pending_info.get("lang", "ru")
+        if target_user_id not in db["pending"]:
+            await query.edit_message_caption(
+                caption=(query.message.caption or "") + "\n\n⚠️ Уже обработано.",
+                parse_mode="Markdown"
+            )
+            return
+
+        pending_info = db["pending"].pop(target_user_id)
+        lang = pending_info.get("lang", "ru")
+
+        if action == "approve":
+            number = get_next_number(db)
+            db["participants"][target_user_id] = {
+                **{k: v for k, v in pending_info.items() if k != "photo_b64"},
+                "number": number,
+                "approved": True,
+                "approved_at": datetime.now().isoformat(),
+            }
+            save_db(db)
+        else:
+            save_db(db)
 
     if action == "approve":
-        number = get_next_number(db)
-        db["participants"][target_user_id] = {
-            **{k: v for k, v in pending_info.items() if k != "photo_b64"},
-            "number": number,
-            "approved": True,
-            "approved_at": datetime.now().isoformat(),
-        }
-        save_db(db)
-
         msg = TEXTS[lang]["approved"].replace("{number}", number)
         try:
             await context.bot.send_message(
@@ -575,7 +594,6 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "reject":
-        save_db(db)
         msg = TEXTS[lang]["rejected"]
         try:
             await context.bot.send_message(
@@ -596,8 +614,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("waiting_broadcast", None)
     context.user_data.pop("waiting_date", None)
     await update.message.reply_text(
-        "Отменено. Нажмите /start чтобы начать заново.",
-        reply_markup=admin_menu() if update.effective_user.id in ADMIN_IDS else ReplyKeyboardMarkup([[]], resize_keyboard=True)
+        "Отменено.",
+        reply_markup=admin_menu() if update.effective_user.id in ADMIN_IDS else ReplyKeyboardRemove()
     )
     return ConversationHandler.END
 
@@ -612,22 +630,9 @@ def main():
         level=logging.INFO
     )
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    persistence = PicklePersistence(filepath=PERSISTENCE_FILE)
+    app = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
 
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            CHOOSE_LANG: [CallbackQueryHandler(choose_language, pattern="^lang_")],
-            WAIT_SCREENSHOT: [
-                MessageHandler(filters.PHOTO, receive_screenshot),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_screenshot),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_user=True,
-    )
-
-    # Определяем кнопки меню пользователя для фильтрации
     all_user_btns = (
         [v["menu_btn_raffle"] for v in TEXTS.values()] +
         [v["menu_btn_number"] for v in TEXTS.values()] +
@@ -635,13 +640,28 @@ def main():
     )
     admin_btns = ["📊 Статистика", "⏳ На проверке", "📤 Рассылка", "📅 Изменить дату"]
 
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            CHOOSE_LANG: [CallbackQueryHandler(choose_language, pattern="^lang_")],
+            WAIT_SCREENSHOT: [
+                MessageHandler(filters.PHOTO, receive_screenshot),
+                MessageHandler(filters.ALL & ~filters.COMMAND, receive_screenshot),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        name="registration_conversation",
+        persistent=True,
+        per_user=True,
+    )
+
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(admin_decision, pattern="^(approve|reject)_"))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("|".join(all_user_btns)), handle_user_menu))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("|".join(admin_btns)), handle_admin_menu))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_input))
 
-    print("🤖 Бот Tcell 5G v3 запущен!")
+    print("🤖 Бот Tcell 5G Final запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
