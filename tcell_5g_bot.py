@@ -22,6 +22,7 @@ import logging
 import json
 import os
 import random
+import re
 from datetime import datetime, time, timedelta, timezone
 
 import openpyxl
@@ -155,7 +156,6 @@ TEXTS = {
         ),
         "got_screenshot": (
             "✅ Скриншот гирифта шуд! Барои тафтиш мефиристам.\n\n"
-            "📍 Шумо дар навбат: *#{position}*\n\n"
             "Баъди тафтиш рақами беназири иштирокчии шумо дода мешавад. "
             "Одатан ин чанд дақиқа вақт мегирад."
         ),
@@ -555,7 +555,6 @@ async def action_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 *Статистика акции Tcell 5G*\n\n"
         f"✅ Подтверждённых участников: *{total}*\n"
         f"⏳ Ожидают проверки: *{pending}*\n"
-        f"🔢 Следующий номер: *{str(db['counter'] + 1).zfill(3)}*\n"
         f"📅 Дата розыгрыша: *{db.get('raffle_date', DEFAULT_RAFFLE_DATE)}*",
         parse_mode="Markdown"
     )
@@ -1004,8 +1003,8 @@ def main():
     app.add_handler(CommandHandler("setdate",   cmd_setdate))
     app.add_handler(CommandHandler("export",    cmd_export))
     app.add_handler(CallbackQueryHandler(admin_decision, pattern="^(approve_|reject_|rejectconfirm_)"))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("|".join(all_user_btns)), handle_user_menu))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("|".join(admin_btns)), handle_admin_menu))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("|".join(re.escape(b) for b in all_user_btns)), handle_user_menu))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("|".join(re.escape(b) for b in admin_btns)), handle_admin_menu))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_input))
     # Fallback: фото от пользователей вне ConversationHandler (после отклонения)
     app.add_handler(MessageHandler(filters.PHOTO, receive_screenshot))
