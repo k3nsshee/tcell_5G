@@ -84,7 +84,6 @@ TEXTS = {
         ),
         "got_screenshot": (
             "✅ Скриншот получен! Передаю на проверку.\n\n"
-            "📍 Вы в очереди: *#{position}*\n\n"
             "Как только скриншот будет проверен, вы получите ваш уникальный номер участника. "
             "Обычно это занимает несколько минут."
         ),
@@ -270,8 +269,12 @@ def save_db_sync(db: dict):
 
 
 def get_next_number(db: dict) -> str:
-    db["counter"] += 1
-    return str(db["counter"]).zfill(3)
+    """Generate a unique random 4-digit participant number."""
+    used = {info.get("number") for info in db["participants"].values()}
+    while True:
+        number = str(random.randint(1000, 9999))
+        if number not in used:
+            return number
 
 
 def photo_hash(photo_bytes: bytes) -> str:
@@ -390,14 +393,36 @@ async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.message.photo:
-        lang = get_lang(context)
-        await update.message.reply_text(txt(lang, "error_photo"))
-        return WAIT_SCREENSHOT
-
     user = update.message.from_user
     user_id = str(user.id)
     lang = context.user_data.get("lang", "ru")
+
+    # If the user sends a menu button while in this state, handle it and stay put
+    if update.message.text:
+        all_menu_btns = (
+            [TEXTS[l]["menu_btn_raffle"] for l in TEXTS] +
+            [TEXTS[l]["menu_btn_number"] for l in TEXTS] +
+            [TEXTS[l]["menu_btn_status"] for l in TEXTS]
+        )
+        if update.message.text in all_menu_btns:
+            await handle_user_menu(update, context)
+            return WAIT_SCREENSHOT
+        # Any other text — check if already approved, else ask for photo
+        db = load_db_sync()
+        if user_id in db["participants"] and db["participants"][user_id].get("approved"):
+            number = db["participants"][user_id]["number"]
+            await update.message.reply_text(
+                txt(lang, "already_registered", number=number),
+                parse_mode="Markdown",
+                reply_markup=user_menu(lang)
+            )
+            return ConversationHandler.END
+        await update.message.reply_text(txt(lang, "error_photo"))
+        return WAIT_SCREENSHOT
+
+    if not update.message.photo:
+        await update.message.reply_text(txt(lang, "error_photo"))
+        return WAIT_SCREENSHOT
 
     async with db_lock:
         db = load_db_sync()
@@ -424,8 +449,6 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Проверка дубликата
         duplicate_of = db["photo_hashes"].get(p_hash)
 
-        queue_position = random.randint(10000, 99999)
-
         db["pending"][user_id] = {
             "user_id": user_id,
             "username": user.username or "",
@@ -443,7 +466,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         job.schedule_removal()
 
     await update.message.reply_text(
-        txt(lang, "got_screenshot", position=queue_position),
+        txt(lang, "got_screenshot"),
         parse_mode="Markdown",
         reply_markup=user_menu(lang)
     )
