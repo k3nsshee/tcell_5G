@@ -13,7 +13,8 @@ Tcell 5G Campaign Bot
 """
 
 import asyncio
-import asyncpg
+import psycopg2
+import psycopg2.extras
 import base64
 import hashlib
 import io
@@ -51,7 +52,7 @@ COVERAGE_MAP_FILE = "coverage_map.jpg"
 PERSISTENCE_FILE = "bot_persistence.pkl"
 DEFAULT_RAFFLE_DATE = os.environ.get("RAFFLE_DATE", "01.08.2025")
 
-db_pool: asyncpg.Pool = None
+db_conn = None
 db_lock = asyncio.Lock()
 
 # ─────────────────────────────────────────────
@@ -217,7 +218,7 @@ REJECT_REASONS = {
 }
 
 # ─────────────────────────────────────────────
-# БД — PostgreSQL
+# БД — PostgreSQL (psycopg2)
 # ─────────────────────────────────────────────
 
 _DEFAULT_DB = {
@@ -229,26 +230,28 @@ _DEFAULT_DB = {
 }
 
 
-async def init_db():
-    global db_pool
-    db_pool = await asyncpg.create_pool(DATABASE_URL)
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
+def init_db_sync():
+    global db_conn
+    db_conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+    with db_conn.cursor() as cur:
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS bot_state (
                 id INTEGER PRIMARY KEY DEFAULT 1,
                 data JSONB NOT NULL
             )
         """)
-        await conn.execute(
-            "INSERT INTO bot_state (id, data) VALUES (1, $1::jsonb) ON CONFLICT (id) DO NOTHING",
-            json.dumps(_DEFAULT_DB)
+        cur.execute(
+            "INSERT INTO bot_state (id, data) VALUES (1, %s) ON CONFLICT (id) DO NOTHING",
+            (json.dumps(_DEFAULT_DB),)
         )
+    db_conn.commit()
 
 
-async def load_db() -> dict:
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT data FROM bot_state WHERE id = 1")
-    db = json.loads(row["data"]) if row else dict(_DEFAULT_DB)
+def load_db_sync() -> dict:
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT data FROM bot_state WHERE id = 1")
+        row = cur.fetchone()
+    db = row[0] if row else dict(_DEFAULT_DB)
     db.setdefault("participants", {})
     db.setdefault("counter", 0)
     db.setdefault("pending", {})
@@ -257,12 +260,13 @@ async def load_db() -> dict:
     return db
 
 
-async def save_db(db: dict):
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE bot_state SET data = $1::jsonb WHERE id = 1",
-            json.dumps(db, ensure_ascii=False)
+def save_db_sync(db: dict):
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "UPDATE bot_state SET data = %s WHERE id = 1",
+            (json.dumps(db, ensure_ascii=False),)
         )
+    db_conn.commit()
 
 
 def get_next_number(db: dict) -> str:
@@ -296,7 +300,7 @@ def admin_menu():
     return ReplyKeyboardMarkup([
         ["📊 Статистика", "⏳ На проверке"],
         ["📤 Рассылка", "📅 Изменить дату"],
-        ["📥 Экспорт CSV"],
+        ["📥 Экспорт Excel"],
     ], resize_keyboard=True)
 
 
@@ -347,7 +351,7 @@ async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = str(query.from_user.id)
 
     async with db_lock:
-        db = await load_db()
+        db = load_db_sync()
 
         if user_id in db["participants"] and db["participants"][user_id].get("approved"):
             number = db["participants"][user_id]["number"]
@@ -371,8 +375,6 @@ async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         data={"user_id": query.from_user.id, "lang": lang},
         name=f"reminder_{query.from_user.id}",
     )
-
-    await asyncio.sleep(5)
 
     try:
         with open(COVERAGE_MAP_FILE, "rb") as photo:
@@ -398,7 +400,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lang = context.user_data.get("lang", "ru")
 
     async with db_lock:
-        db = await load_db()
+        db = load_db_sync()
 
         if user_id in db["participants"] and db["participants"][user_id].get("approved"):
             number = db["participants"][user_id]["number"]
@@ -434,7 +436,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "photo_hash": p_hash,
             "timestamp": datetime.now().isoformat(),
         }
-        await save_db(db)
+        save_db_sync(db)
 
     # Cancel pending reminder — user submitted their screenshot
     for job in context.job_queue.get_jobs_by_name(f"reminder_{user_id}"):
@@ -486,7 +488,7 @@ async def handle_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = str(update.effective_user.id)
     lang = get_lang(context)
-    db = await load_db()
+    db = load_db_sync()
 
     raffle_btns = [TEXTS["ru"]["menu_btn_raffle"], TEXTS["tj"]["menu_btn_raffle"]]
     number_btns = [TEXTS["ru"]["menu_btn_number"], TEXTS["tj"]["menu_btn_number"]]
@@ -523,7 +525,7 @@ async def handle_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def action_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with db_lock:
-        db = await load_db()
+        db = load_db_sync()
     total = len(db["participants"])
     pending = len(db["pending"])
     await update.message.reply_text(
@@ -539,7 +541,7 @@ async def action_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def action_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     async with db_lock:
-        db = await load_db()
+        db = load_db_sync()
     if not db["pending"]:
         await update.message.reply_text("✅ Нет скриншотов на проверке.")
         return
@@ -590,7 +592,7 @@ async def action_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def action_setdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with db_lock:
-        db = await load_db()
+        db = load_db_sync()
     context.user_data["waiting_date"] = True
     current = db.get("raffle_date", DEFAULT_RAFFLE_DATE)
     await update.message.reply_text(
@@ -605,7 +607,7 @@ async def action_setdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def action_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     async with db_lock:
-        db = await load_db()
+        db = load_db_sync()
     if not db["participants"]:
         await update.message.reply_text("📭 Нет подтверждённых участников для экспорта.")
         return
@@ -689,7 +691,7 @@ async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await action_broadcast(update, context)
     elif text == "📅 Изменить дату":
         await action_setdate(update, context)
-    elif text == "📥 Экспорт CSV":
+    elif text == "📥 Экспорт Excel":
         await action_export(update, context)
 
 
@@ -701,7 +703,7 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data.pop("waiting_broadcast")
         message_text = update.message.text
         async with db_lock:
-            db = await load_db()
+            db = load_db_sync()
             participant_ids = list(db["participants"].keys())
         success, failed = 0, 0
         for uid in participant_ids:
@@ -719,9 +721,9 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data.pop("waiting_date")
         new_date = update.message.text.strip()
         async with db_lock:
-            db = await load_db()
+            db = load_db_sync()
             db["raffle_date"] = new_date
-            await save_db(db)
+            save_db_sync(db)
         await update.message.reply_text(
             f"✅ Дата розыгрыша обновлена: *{new_date}*",
             parse_mode="Markdown",
@@ -749,7 +751,7 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_user_id = data[len("approve_"):]
 
         async with db_lock:
-            db = await load_db()
+            db = load_db_sync()
 
             if target_user_id not in db["pending"]:
                 await query.edit_message_caption(
@@ -774,7 +776,7 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 db["photo_hashes"][p_hash] = target_user_id
 
             total = len(db["participants"])
-            await save_db(db)
+            save_db_sync(db)
 
         msg = TEXTS[lang]["approved"].replace("{number}", number)
         try:
@@ -797,7 +799,7 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_user_id = data[len("reject_"):]
 
         async with db_lock:
-            db = await load_db()
+            db = load_db_sync()
             if target_user_id not in db["pending"]:
                 await query.edit_message_caption(
                     caption=(query.message.caption or "") + "\n\n⚠️ Уже обработано.",
@@ -819,7 +821,7 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, target_user_id, reason_code = parts
 
         async with db_lock:
-            db = await load_db()
+            db = load_db_sync()
 
             if target_user_id not in db["pending"]:
                 await query.edit_message_caption(
@@ -830,7 +832,7 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             pending_info = db["pending"].pop(target_user_id)
             lang = pending_info.get("lang", "ru")
-            await save_db(db)
+            save_db_sync(db)
 
         reason_key = f"rejected_{reason_code}"
         msg = TEXTS[lang].get(reason_key, TEXTS[lang]["rejected_other"])
@@ -867,7 +869,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def daily_backup(context: ContextTypes.DEFAULT_TYPE):
     """Send participants backup to all admins at 10:00 AM Dushanbe (UTC+5)."""
-    db = await load_db()
+    db = load_db_sync()
     backup_data = json.dumps(db, ensure_ascii=False, indent=2).encode("utf-8")
     total = len(db["participants"])
     tz_dushanbe = timezone(timedelta(hours=5))
@@ -895,7 +897,7 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     user_id_int = context.job.data["user_id"]
     user_id = str(user_id_int)
     lang = context.job.data["lang"]
-    db = await load_db()
+    db = load_db_sync()
     # Don't send if already registered or pending review
     if user_id in db["participants"] or user_id in db["pending"]:
         return
@@ -915,7 +917,7 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application: Application):
     """Initialize DB, set slash commands, and schedule jobs."""
-    await init_db()
+    init_db_sync()
 
     # Admin slash commands
     commands = [
@@ -955,7 +957,7 @@ def main():
         [v["menu_btn_number"] for v in TEXTS.values()] +
         [v["menu_btn_status"] for v in TEXTS.values()]
     )
-    admin_btns = ["📊 Статистика", "⏳ На проверке", "📤 Рассылка", "📅 Изменить дату", "📥 Экспорт CSV"]
+    admin_btns = ["📊 Статистика", "⏳ На проверке", "📤 Рассылка", "📅 Изменить дату", "📥 Экспорт Excel"]
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
