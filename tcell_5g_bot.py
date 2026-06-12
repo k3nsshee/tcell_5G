@@ -13,8 +13,8 @@ Tcell 5G Campaign Bot
 """
 
 import asyncio
-import psycopg2
-import psycopg2.extras
+import pg8000.native
+import urllib.parse
 import base64
 import hashlib
 import io
@@ -53,7 +53,6 @@ COVERAGE_MAP_FILE = "coverage_map.jpg"
 PERSISTENCE_FILE = "bot_persistence.pkl"
 DEFAULT_RAFFLE_DATE = os.environ.get("RAFFLE_DATE", "01.08.2025")
 
-db_conn = None
 db_lock = asyncio.Lock()
 
 # ─────────────────────────────────────────────
@@ -229,28 +228,38 @@ _DEFAULT_DB = {
 }
 
 
+def get_conn():
+    r = urllib.parse.urlparse(DATABASE_URL)
+    return pg8000.native.Connection(
+        host=r.hostname,
+        port=r.port or 5432,
+        database=r.path.lstrip("/"),
+        user=r.username,
+        password=r.password,
+        ssl_context=True,
+    )
+
+
 def init_db_sync():
-    global db_conn
-    db_conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-    with db_conn.cursor() as cur:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS bot_state (
-                id INTEGER PRIMARY KEY DEFAULT 1,
-                data JSONB NOT NULL
-            )
-        """)
-        cur.execute(
-            "INSERT INTO bot_state (id, data) VALUES (1, %s) ON CONFLICT (id) DO NOTHING",
-            (json.dumps(_DEFAULT_DB),)
+    conn = get_conn()
+    conn.run("""
+        CREATE TABLE IF NOT EXISTS bot_state (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            data TEXT NOT NULL
         )
-    db_conn.commit()
+    """)
+    conn.run(
+        "INSERT INTO bot_state (id, data) VALUES (1, :data) ON CONFLICT (id) DO NOTHING",
+        data=json.dumps(_DEFAULT_DB)
+    )
+    conn.close()
 
 
 def load_db_sync() -> dict:
-    with db_conn.cursor() as cur:
-        cur.execute("SELECT data FROM bot_state WHERE id = 1")
-        row = cur.fetchone()
-    db = row[0] if row else dict(_DEFAULT_DB)
+    conn = get_conn()
+    rows = conn.run("SELECT data FROM bot_state WHERE id = 1")
+    conn.close()
+    db = json.loads(rows[0][0]) if rows else dict(_DEFAULT_DB)
     db.setdefault("participants", {})
     db.setdefault("counter", 0)
     db.setdefault("pending", {})
@@ -260,12 +269,12 @@ def load_db_sync() -> dict:
 
 
 def save_db_sync(db: dict):
-    with db_conn.cursor() as cur:
-        cur.execute(
-            "UPDATE bot_state SET data = %s WHERE id = 1",
-            (json.dumps(db, ensure_ascii=False),)
-        )
-    db_conn.commit()
+    conn = get_conn()
+    conn.run(
+        "UPDATE bot_state SET data = :data WHERE id = 1",
+        data=json.dumps(db, ensure_ascii=False)
+    )
+    conn.close()
 
 
 def get_next_number(db: dict) -> str:
