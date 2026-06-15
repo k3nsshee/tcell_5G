@@ -20,7 +20,9 @@ services:
       - tcell_net
 
   bot:
-    build: .
+    build:
+      context: .
+      network: host
     container_name: tcell5g_bot
     restart: unless-stopped
     env_file:
