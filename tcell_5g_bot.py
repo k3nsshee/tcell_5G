@@ -53,6 +53,17 @@ COVERAGE_MAP_FILE = "coverage_map.jpg"
 PERSISTENCE_FILE = os.environ.get("PERSISTENCE_FILE", "bot_persistence.pkl")
 DEFAULT_RAFFLE_DATE = os.environ.get("RAFFLE_DATE", "01.08.2025")
 HEALTH_PORT = int(os.environ.get("HEALTH_PORT", "8080"))
+# Прокси для запросов к Telegram. Берём из явной TELEGRAM_PROXY, иначе из
+# стандартных HTTPS_PROXY/HTTP_PROXY. httpx внутри PTB не всегда подхватывает
+# env-прокси для polling-пула, поэтому задаём его явно в билдере.
+TELEGRAM_PROXY = (
+    os.environ.get("TELEGRAM_PROXY")
+    or os.environ.get("HTTPS_PROXY")
+    or os.environ.get("https_proxy")
+    or os.environ.get("HTTP_PROXY")
+    or os.environ.get("http_proxy")
+    or None
+)
 
 db_lock = asyncio.Lock()
 
@@ -1021,14 +1032,18 @@ def main():
     )
 
     persistence = PicklePersistence(filepath=PERSISTENCE_FILE)
-    app = (
+    builder = (
         Application.builder()
         .token(BOT_TOKEN)
         .persistence(persistence)
         .post_init(post_init)
         .post_shutdown(stop_health_server)
-        .build()
     )
+    # Явно прокидываем прокси и для обычных запросов, и для polling-пула.
+    if TELEGRAM_PROXY:
+        logging.info(f"Использую прокси для Telegram: {TELEGRAM_PROXY}")
+        builder = builder.proxy(TELEGRAM_PROXY).get_updates_proxy(TELEGRAM_PROXY)
+    app = builder.build()
 
     all_user_btns = (
         [v["menu_btn_raffle"] for v in TEXTS.values()] +
