@@ -1,0 +1,11 @@
+.git
+.gitignore
+.env
+.env.example
+*.pkl
+data/
+__pycache__/
+*.pyc
+README.md
+docker-compose.yml
+nginx/

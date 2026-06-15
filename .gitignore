@@ -1,0 +1,14 @@
+# Секреты и окружение
+.env
+
+# Состояние бота
+*.pkl
+data/
+
+# Python
+__pycache__/
+*.pyc
+
+# Бэкапы/экспорт
+participants_backup_*.json
+tcell_5g_participants_*.xlsx

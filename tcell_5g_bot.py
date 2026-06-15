@@ -50,8 +50,9 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_IDS = [int(x.strip()) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()]
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 COVERAGE_MAP_FILE = "coverage_map.jpg"
-PERSISTENCE_FILE = "bot_persistence.pkl"
+PERSISTENCE_FILE = os.environ.get("PERSISTENCE_FILE", "bot_persistence.pkl")
 DEFAULT_RAFFLE_DATE = os.environ.get("RAFFLE_DATE", "01.08.2025")
+HEALTH_PORT = int(os.environ.get("HEALTH_PORT", "8080"))
 
 db_lock = asyncio.Lock()
 
@@ -230,13 +231,19 @@ _DEFAULT_DB = {
 
 def get_conn():
     r = urllib.parse.urlparse(DATABASE_URL)
+    query = urllib.parse.parse_qs(r.query)
+    sslmode = query.get("sslmode", [""])[0].lower()
+    # SSL включается только если явно запрошено (sslmode=require/verify-*
+    # в DATABASE_URL или DB_SSL=true). Для локального Postgres SSL не нужен.
+    use_ssl = sslmode in ("require", "verify-ca", "verify-full") or \
+        os.environ.get("DB_SSL", "").lower() in ("1", "true", "yes")
     return pg8000.native.Connection(
         host=r.hostname,
         port=r.port or 5432,
         database=r.path.lstrip("/"),
         user=r.username,
-        password=r.password,
-        ssl_context=True,
+        password=urllib.parse.unquote(r.password) if r.password else None,
+        ssl_context=True if use_ssl else None,
     )
 
 
@@ -946,9 +953,42 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
 # ЗАПУСК
 # ─────────────────────────────────────────────
 
+async def start_health_server(application: Application):
+    """Запускает лёгкий HTTP /health эндпоинт для nginx proxy_pass и Docker healthcheck."""
+    from aiohttp import web
+
+    async def health(_request):
+        try:
+            conn = get_conn()
+            conn.run("SELECT 1")
+            conn.close()
+            return web.json_response({"status": "ok", "db": "up"})
+        except Exception as e:
+            logging.warning(f"Healthcheck DB error: {e}")
+            return web.json_response({"status": "degraded", "db": "down"}, status=503)
+
+    health_app = web.Application()
+    health_app.router.add_get("/health", health)
+    health_app.router.add_get("/", health)
+
+    runner = web.AppRunner(health_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", HEALTH_PORT)
+    await site.start()
+    application.bot_data["_health_runner"] = runner
+    logging.info(f"Health-сервер запущен на :{HEALTH_PORT}")
+
+
+async def stop_health_server(application: Application):
+    runner = application.bot_data.get("_health_runner")
+    if runner is not None:
+        await runner.cleanup()
+
+
 async def post_init(application: Application):
     """Initialize DB, set slash commands, and schedule jobs."""
     init_db_sync()
+    await start_health_server(application)
 
     # Admin slash commands
     commands = [
@@ -981,7 +1021,14 @@ def main():
     )
 
     persistence = PicklePersistence(filepath=PERSISTENCE_FILE)
-    app = Application.builder().token(BOT_TOKEN).persistence(persistence).post_init(post_init).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .persistence(persistence)
+        .post_init(post_init)
+        .post_shutdown(stop_health_server)
+        .build()
+    )
 
     all_user_btns = (
         [v["menu_btn_raffle"] for v in TEXTS.values()] +
