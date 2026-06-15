@@ -23,6 +23,11 @@ services:
     build:
       context: .
       network: host
+      args:
+        HTTP_PROXY: http://10.84.142.62:3128
+        HTTPS_PROXY: http://10.84.142.62:3128
+        http_proxy: http://10.84.142.62:3128
+        https_proxy: http://10.84.142.62:3128
     container_name: tcell5g_bot
     restart: unless-stopped
     env_file:
