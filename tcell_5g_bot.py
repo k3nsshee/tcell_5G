@@ -50,20 +50,8 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_IDS = [int(x.strip()) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()]
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 COVERAGE_MAP_FILE = "coverage_map.jpg"
-PERSISTENCE_FILE = os.environ.get("PERSISTENCE_FILE", "bot_persistence.pkl")
+PERSISTENCE_FILE = "bot_persistence.pkl"
 DEFAULT_RAFFLE_DATE = os.environ.get("RAFFLE_DATE", "01.08.2025")
-HEALTH_PORT = int(os.environ.get("HEALTH_PORT", "8080"))
-# Прокси для запросов к Telegram. Берём из явной TELEGRAM_PROXY, иначе из
-# стандартных HTTPS_PROXY/HTTP_PROXY. httpx внутри PTB не всегда подхватывает
-# env-прокси для polling-пула, поэтому задаём его явно в билдере.
-TELEGRAM_PROXY = (
-    os.environ.get("TELEGRAM_PROXY")
-    or os.environ.get("HTTPS_PROXY")
-    or os.environ.get("https_proxy")
-    or os.environ.get("HTTP_PROXY")
-    or os.environ.get("http_proxy")
-    or None
-)
 
 db_lock = asyncio.Lock()
 
@@ -77,21 +65,13 @@ CHOOSE_LANG, WAIT_SCREENSHOT = range(2)
 # ─────────────────────────────────────────────
 TEXTS = {
     "ru": {
-        "welcome": (
-            "👋 Добро пожаловать в акцию Tcell «Подключи 5G»!\n\n"
-            "Вы уже подключили 5G сеть на своём телефоне?\n"
-            "Отлично! Осталось совсем немного 🚀\n\n"
-            "Сейчас я отправлю вам карту покрытия 5G сети Tcell."
-        ),
+        "welcome": "👋 Добро пожаловать в розыгрыш «Подключи 5G»!",
         "map_caption": (
             "🗺 *Карта покрытия 5G сети Tcell*\n\n"
-            "Убедитесь, что вы находитесь в зоне покрытия 5G.\n\n"
             "📱 *Что нужно сделать:*\n"
-            "1. Зайдите в Настройки телефона\n"
-            "2. Выберите «Мобильная сеть» → «Тип сети»\n"
-            "3. Выберите *5G / LTE / 3G / 2G*\n"
-            "4. Убедитесь, что в статус-баре отображается значок *5G*\n"
-            "5. Сделайте скриншот с видимым значком 5G\n\n"
+            "1. Убедитесь, что вы набрали USSD-команду *\\*871\\*5#*\n"
+            "2. Зайдите в Настройки телефона и убедитесь, что в статус-баре отображается значок *5G*\n"
+            "3. Сделайте скриншот, где возле антенны отображается *5G*\n\n"
             "📤 Отправьте скриншот прямо сюда!"
         ),
         "got_screenshot": (
@@ -110,20 +90,11 @@ TEXTS = {
         ),
         "rejected_no5g": (
             "❌ Скриншот не прошёл проверку.\n\n"
-            "Причина: на скриншоте не виден значок *5G* в статус-баре.\n\n"
-            "Убедитесь, что значок 5G отображается, и отправьте новый скриншот 👇"
-        ),
-        "rejected_blurry": (
-            "❌ Скриншот не прошёл проверку.\n\n"
-            "Причина: скриншот нечёткий или плохо читается.\n\n"
-            "Пожалуйста, сделайте чёткий скриншот и отправьте снова 👇"
-        ),
-        "rejected_other": (
-            "❌ Скриншот не прошёл проверку.\n\n"
-            "Убедитесь, что значок *5G* чётко виден в статус-баре, и отправьте новый скриншот 👇"
+            "Причина: на скриншоте не виден значок *5G* возле антенны.\n\n"
+            "Убедитесь, что значок 5G отображается возле антенны, и отправьте новый скриншот 👇"
         ),
         "already_registered": (
-            "ℹ️ Вы уже зарегистрированы в акции!\n\n"
+            "ℹ️ Вы уже зарегистрированы в розыгрыше!\n\n"
             "Ваш номер участника: *#{number}*\n\n"
             "Следите за розыгрышем 🎁"
         ),
@@ -132,7 +103,7 @@ TEXTS = {
             "Пожалуйста, подождите немного."
         ),
         "error_photo": "❗ Пожалуйста, отправьте именно фото (скриншот), а не файл или текст.",
-        "raffle_info": "🎰 *Информация о розыгрыше*\n\n📅 Дата розыгрыша: *{date}*\n\n🎁 Призы будут объявлены в боте.",
+        "raffle_info": "🎰 *Информация о розыгрыше*\n\n📅 Дата розыгрыша: *{date}*\n\n🎁 Победители будут объявлены в боте.",
         "my_number": "🔢 Ваш номер участника: *#{number}*\n\nУдачи в розыгрыше! 🍀",
         "no_number": "❌ Вы ещё не зарегистрированы.\nНажмите /start чтобы участвовать.",
         "menu_btn_raffle": "🎰 Когда розыгрыш?",
@@ -141,28 +112,15 @@ TEXTS = {
         "status_approved": "✅ Вы зарегистрированы! Номер: *#{number}*",
         "status_pending": "⏳ Ваш скриншот на проверке. Ожидайте.",
         "status_none": "❌ Вы ещё не участвуете. Нажмите /start",
-        "reminder": (
-            "👋 Напоминание об акции Tcell «Подключи 5G»!\n\n"
-            "Вы выбрали язык, но ещё не отправили скриншот.\n\n"
-            "📱 Подключите 5G в настройках телефона, убедитесь что значок *5G* виден в статус-баре, и отправьте скриншот сюда 📸"
-        ),
     },
     "tj": {
-        "welcome": (
-            "👋 Хуш омадед ба акцияи Tcell «5G пайваст кун»!\n\n"
-            "Шумо аллакай шабакаи 5G-ро дар телефонатон пайваст кардед?\n"
-            "Аъло! Каме монд 🚀\n\n"
-            "Ҳозун ман ба шумо харитаи фарогирии шабакаи 5G мефиристам."
-        ),
+        "welcome": "👋 Хуш омадед ба икдоми «Ба 5G пайваст шав»!",
         "map_caption": (
             "🗺 *Харитаи фарогирии шабакаи 5G Tcell*\n\n"
-            "Боварӣ ҳосил кунед, ки шумо дар минтақаи фарогирии 5G ҳастед.\n\n"
             "📱 *Чӣ бояд кард:*\n"
-            "1. Ба Танзимоти телефон равед\n"
-            "2. «Шабакаи мобилӣ» → «Навъи шабака»-ро интихоб кунед\n"
-            "3. *5G / LTE / 3G / 2G*-ро интихоб кунед\n"
-            "4. Боварӣ ҳосил кунед, ки аломати *5G* намоён аст\n"
-            "5. Аз экрани телефонатон скриншот гиред\n\n"
+            "1. Бори дигар санҷед, ки шумо фармони *\\*871\\*5#* фаъол кардед\n"
+            "2. Танзимоти телефони худро санҷед, ки шабакаи *5G* интихоб шудааст\n"
+            "3. Скриншот кунед, ки дар он шабакаи *5G* дар назди антенна намоён бошад\n\n"
             "📤 Скриншотро ҳамин ҷо фиристед!"
         ),
         "got_screenshot": (
@@ -171,7 +129,7 @@ TEXTS = {
             "Одатан ин чанд дақиқа вақт мегирад."
         ),
         "approved": (
-            "🎉 *Табрик! Шумо иштирокчии акцияи Tcell «5G пайваст кун» ҳастед!*\n\n"
+            "🎉 *Табрик! Шумо иштирокчии икдоми «Ба 5G пайваст шав» ҳастед!*\n\n"
             "🔢 Рақами беназири иштирокчии шумо:\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "          *#{number}*\n"
@@ -181,20 +139,11 @@ TEXTS = {
         ),
         "rejected_no5g": (
             "❌ Скриншоти шумо тафтишро нагузашт.\n\n"
-            "Сабаб: дар скриншот аломати *5G* дар статус-бар намоён нест.\n\n"
-            "Боварӣ ҳосил кунед, ки аломати 5G намоён аст ва скриншоти наверо фиристед 👇"
-        ),
-        "rejected_blurry": (
-            "❌ Скриншоти шумо тафтишро нагузашт.\n\n"
-            "Сабаб: скриншот норавшан ё хонда намешавад.\n\n"
-            "Лутфан скриншоти равшан гиред ва дубора фиристед 👇"
-        ),
-        "rejected_other": (
-            "❌ Скриншоти шумо тафтишро нагузашт.\n\n"
-            "Боварӣ ҳосил кунед, ки аломати *5G* дар статус-бар намоён аст ва скриншоти наверо фиристед 👇"
+            "Сабаб: дар скриншот аломати *5G* дар назди антенна намоён нест.\n\n"
+            "Аломати 5G-ро намоён кунед ва скриншоти наверо фиристед 👇"
         ),
         "already_registered": (
-            "ℹ️ Шумо аллакай дар акция бақайд гирифта шудед!\n\n"
+            "ℹ️ Шумо аллакай дар икдом бақайд гирифта шудед!\n\n"
             "Рақами иштирокчии шумо: *#{number}*\n\n"
             "Қуръакаширо пайгирӣ кунед 🎁"
         ),
@@ -203,28 +152,21 @@ TEXTS = {
             "Лутфан каме интизор шавед."
         ),
         "error_photo": "❗ Лутфан акс (скриншот) фиристед, на файл ё матн.",
-        "raffle_info": "🎰 *Маълумот дар бораи қуръакашӣ*\n\n📅 Санаи қуръакашӣ: *{date}*\n\n🎁 Ҷоизаҳо дар бот эълон мешаванд.",
-        "my_number": "🔢 Рақами иштирокчии шумо: *#{number}*\n\nДар қуръакашӣ бахт! 🍀",
-        "no_number": "❌ Шумо ҳанӯз бақайд гирифта нашудед.\n/start -ро пахш кунед.",
+        "raffle_info": "🎰 *Маълумот дар бораи қуръакашӣ*\n\n📅 Санаи қуръакашӣ: *{date}*\n\n🎁 Голибон дар бот эълон мешаванд.",
+        "my_number": "🔢 Рақами иштирокчии шумо: *#{number}*\n\nДар қуръакашӣ барор хохонем! 🍀",
+        "no_number": "❌ Шумо холо бақайд гирифта нашудед.\n/start -ро пахш кунед.",
         "menu_btn_raffle": "🎰 Қуръакашӣ кай?",
         "menu_btn_number": "🔢 Рақами ман",
         "menu_btn_status": "📋 Ҳолати ман",
-        "status_approved": "✅ Шумо бақайд гирифтед! Рақам: *#{number}*",
-        "status_pending": "⏳ Скриншоти шумо тафтиш мешавад. Интизор шавед.",
+        "status_approved": "✅ Шумо бақайд гирифта шудед! Рақам: *#{number}*",
+        "status_pending": "⏳ Скриншоти шумо тафтиш шуда истодааст. Интизор шавед.",
         "status_none": "❌ Шумо иштирок намекунед. /start -ро пахш кунед",
-        "reminder": (
-            "👋 Ёдоварии акцияи Tcell «5G пайваст кун»!\n\n"
-            "Шумо забонро интихоб кардед, аммо скриншот нафиристодед.\n\n"
-            "📱 5G-ро дар танзимоти телефон пайваст кунед, аломати *5G*-ро дар статус-бар бубинед ва скриншотро ин ҷо фиристед 📸"
-        ),
     }
 }
 
 # Причины отклонения — метки кнопок для админа
 REJECT_REASONS = {
-    "no5g":  "❌ Нет значка 5G",
-    "blurry": "📷 Нечёткий",
-    "other":  "🚫 Иное",
+    "no5g": "❌ Нет значка 5G",
 }
 
 # ─────────────────────────────────────────────
@@ -242,19 +184,13 @@ _DEFAULT_DB = {
 
 def get_conn():
     r = urllib.parse.urlparse(DATABASE_URL)
-    query = urllib.parse.parse_qs(r.query)
-    sslmode = query.get("sslmode", [""])[0].lower()
-    # SSL включается только если явно запрошено (sslmode=require/verify-*
-    # в DATABASE_URL или DB_SSL=true). Для локального Postgres SSL не нужен.
-    use_ssl = sslmode in ("require", "verify-ca", "verify-full") or \
-        os.environ.get("DB_SSL", "").lower() in ("1", "true", "yes")
     return pg8000.native.Connection(
         host=r.hostname,
         port=r.port or 5432,
         database=r.path.lstrip("/"),
         user=r.username,
-        password=urllib.parse.unquote(r.password) if r.password else None,
-        ssl_context=True if use_ssl else None,
+        password=r.password,
+        ssl_context=True,
     )
 
 
@@ -398,14 +334,6 @@ async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await query.edit_message_text(txt(lang, "welcome"))
 
-    # Schedule 3-hour reminder if user doesn't send a screenshot
-    context.job_queue.run_once(
-        send_reminder,
-        when=10800,  # 3 hours in seconds
-        data={"user_id": query.from_user.id, "lang": lang},
-        name=f"reminder_{query.from_user.id}",
-    )
-
     try:
         with open(COVERAGE_MAP_FILE, "rb") as photo:
             await query.message.reply_photo(
@@ -487,10 +415,6 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "timestamp": datetime.now().isoformat(),
         }
         save_db_sync(db)
-
-    # Cancel pending reminder — user submitted their screenshot
-    for job in context.job_queue.get_jobs_by_name(f"reminder_{user_id}"):
-        job.schedule_removal()
 
     await update.message.reply_text(
         txt(lang, "got_screenshot"),
@@ -941,65 +865,14 @@ async def daily_backup(context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Ошибка отправки бэкапа админу {admin_id}: {e}")
 
 
-async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
-    """Remind users who picked a language but never sent a screenshot (fires after 3 hours)."""
-    user_id_int = context.job.data["user_id"]
-    user_id = str(user_id_int)
-    lang = context.job.data["lang"]
-    db = load_db_sync()
-    # Don't send if already registered or pending review
-    if user_id in db["participants"] or user_id in db["pending"]:
-        return
-    try:
-        await context.bot.send_message(
-            chat_id=user_id_int,
-            text=txt(lang, "reminder"),
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logging.warning(f"Не удалось отправить напоминание пользователю {user_id}: {e}")
-
 
 # ─────────────────────────────────────────────
 # ЗАПУСК
 # ─────────────────────────────────────────────
 
-async def start_health_server(application: Application):
-    """Запускает лёгкий HTTP /health эндпоинт для nginx proxy_pass и Docker healthcheck."""
-    from aiohttp import web
-
-    async def health(_request):
-        try:
-            conn = get_conn()
-            conn.run("SELECT 1")
-            conn.close()
-            return web.json_response({"status": "ok", "db": "up"})
-        except Exception as e:
-            logging.warning(f"Healthcheck DB error: {e}")
-            return web.json_response({"status": "degraded", "db": "down"}, status=503)
-
-    health_app = web.Application()
-    health_app.router.add_get("/health", health)
-    health_app.router.add_get("/", health)
-
-    runner = web.AppRunner(health_app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", HEALTH_PORT)
-    await site.start()
-    application.bot_data["_health_runner"] = runner
-    logging.info(f"Health-сервер запущен на :{HEALTH_PORT}")
-
-
-async def stop_health_server(application: Application):
-    runner = application.bot_data.get("_health_runner")
-    if runner is not None:
-        await runner.cleanup()
-
-
 async def post_init(application: Application):
     """Initialize DB, set slash commands, and schedule jobs."""
     init_db_sync()
-    await start_health_server(application)
 
     # Admin slash commands
     commands = [
@@ -1032,18 +905,7 @@ def main():
     )
 
     persistence = PicklePersistence(filepath=PERSISTENCE_FILE)
-    builder = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .persistence(persistence)
-        .post_init(post_init)
-        .post_shutdown(stop_health_server)
-    )
-    # Явно прокидываем прокси и для обычных запросов, и для polling-пула.
-    if TELEGRAM_PROXY:
-        logging.info(f"Использую прокси для Telegram: {TELEGRAM_PROXY}")
-        builder = builder.proxy(TELEGRAM_PROXY).get_updates_proxy(TELEGRAM_PROXY)
-    app = builder.build()
+    app = Application.builder().token(BOT_TOKEN).persistence(persistence).post_init(post_init).build()
 
     all_user_btns = (
         [v["menu_btn_raffle"] for v in TEXTS.values()] +
