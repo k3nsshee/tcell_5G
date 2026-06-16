@@ -36,6 +36,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, filters, ConversationHandler, PicklePersistence
 )
+from telegram.helpers import escape_markdown
 
 try:
     from dotenv import load_dotenv
@@ -52,6 +53,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 COVERAGE_MAP_FILE = "coverage_map.jpg"
 PERSISTENCE_FILE = "bot_persistence.pkl"
 DEFAULT_RAFFLE_DATE = os.environ.get("RAFFLE_DATE", "01.08.2025")
+PENDING_PAGE_SIZE = 10  # сколько скриншотов показывать админу за одну порцию
 
 db_lock = asyncio.Lock()
 
@@ -190,7 +192,7 @@ def get_conn():
         database=r.path.lstrip("/"),
         user=r.username,
         password=r.password,
-        ssl_context=True,
+        ssl_context=False,
     )
 
 
@@ -431,9 +433,9 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     dup_warning = f"\n⚠️ *ДУБЛИКАТ* — это фото уже отправлял `{duplicate_of}`" if duplicate_of else ""
     caption = (
         f"📸 *Новый скриншот на проверку*\n\n"
-        f"👤 {user.full_name}\n"
+        f"👤 {escape_markdown(user.full_name or '', version=1)}\n"
         f"🆔 ID: `{user_id}`\n"
-        f"📛 @{user.username or 'нет'}\n"
+        f"📛 @{escape_markdown(user.username or 'нет', version=1)}\n"
         f"🌐 Язык: {'Русский' if lang == 'ru' else 'Тоҷикӣ'}\n"
         f"🕐 {datetime.now().strftime('%d.%m.%Y %H:%M')}"
         f"{dup_warning}"
@@ -511,23 +513,35 @@ async def action_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def action_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+async def send_pending_page(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    """Отправляет следующую порцию из PENDING_PAGE_SIZE ещё не показанных скриншотов.
+    Уже показанные ID хранятся в user_data — это исключает пропуски, даже если
+    админ одобряет/отклоняет заявки между порциями. В конце — кнопка «Показать ещё»."""
     async with db_lock:
         db = load_db_sync()
-    if not db["pending"]:
-        await update.message.reply_text("✅ Нет скриншотов на проверке.")
+
+    shown = context.user_data.setdefault("pending_shown", set())
+    remaining = [(uid, info) for uid, info in db["pending"].items() if uid not in shown]
+
+    if not remaining:
+        if shown:
+            await context.bot.send_message(chat_id=chat_id, text="✅ Все заявки на проверке показаны.")
+        else:
+            await context.bot.send_message(chat_id=chat_id, text="✅ Нет скриншотов на проверке.")
         return
-    await update.message.reply_text(f"⏳ Скриншотов на проверке: {len(db['pending'])}. Пересылаю...")
-    for uid, info in db["pending"].items():
+
+    batch = remaining[:PENDING_PAGE_SIZE]
+
+    for uid, info in batch:
+        shown.add(uid)
         kbd = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{uid}"),
             InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{uid}"),
         ]])
         caption = (
-            f"📸 *Скриншот на проверку*\n\n"
-            f"👤 {info['full_name']}\n"
-            f"🆔 ID: `{uid}`\n"
+            f"📸 Скриншот на проверку\n\n"
+            f"👤 {info.get('full_name') or ''}\n"
+            f"🆔 ID: {uid}\n"
             f"📛 @{info.get('username') or 'нет'}\n"
             f"🌐 Язык: {'Русский' if info.get('lang') == 'ru' else 'Тоҷикӣ'}\n"
             f"🕐 {info.get('timestamp', '')[:16].replace('T', ' ')}"
@@ -536,22 +550,50 @@ async def action_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if info.get("photo_b64"):
             try:
                 photo_bytes = base64.b64decode(info["photo_b64"])
-                await context.bot.send_photo(chat_id=user_id, photo=io.BytesIO(photo_bytes),
-                    caption=caption, parse_mode="Markdown", reply_markup=kbd)
+                await context.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(photo_bytes),
+                    caption=caption, reply_markup=kbd)
                 sent = True
             except Exception as e:
                 logging.warning(f"photo_b64 не сработал для {uid}: {e}")
         if not sent and info.get("file_id"):
             try:
-                await context.bot.send_photo(chat_id=user_id, photo=info["file_id"],
-                    caption=caption, parse_mode="Markdown", reply_markup=kbd)
+                await context.bot.send_photo(chat_id=chat_id, photo=info["file_id"],
+                    caption=caption, reply_markup=kbd)
                 sent = True
             except Exception as e:
                 logging.warning(f"file_id не сработал для {uid}: {e}")
         if not sent:
-            await update.message.reply_text(
-                f"📸 Фото недоступно (старая запись)\n\n{caption}",
-                parse_mode="Markdown", reply_markup=kbd)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"📸 Фото недоступно (старая запись)\n\n{caption}",
+                reply_markup=kbd)
+
+    left = len(remaining) - len(batch)
+    if left > 0:
+        show = min(left, PENDING_PAGE_SIZE)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"Осталось на проверке: {left}.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"⬇️ Показать ещё {show}", callback_data="pendingmore")
+            ]])
+        )
+
+
+async def action_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_user.id
+    async with db_lock:
+        db = load_db_sync()
+    total = len(db["pending"])
+    if total == 0:
+        await update.message.reply_text("✅ Нет скриншотов на проверке.")
+        return
+    # сбрасываем список показанных — начинаем просмотр очереди заново
+    context.user_data["pending_shown"] = set()
+    await update.message.reply_text(
+        f"⏳ Скриншотов на проверке: {total}. Показываю по {PENDING_PAGE_SIZE}..."
+    )
+    await send_pending_page(context, chat_id)
 
 
 async def action_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -728,8 +770,7 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if target_user_id not in db["pending"]:
                 await query.edit_message_caption(
-                    caption=(query.message.caption or "") + "\n\n⚠️ Уже обработано.",
-                    parse_mode="Markdown"
+                    caption=(query.message.caption or "") + "\n\n⚠️ Уже обработано."
                 )
                 return
 
@@ -763,8 +804,7 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.warning(f"Не удалось уведомить пользователя: {e}")
 
         await query.edit_message_caption(
-            caption=(query.message.caption or "") + f"\n\n✅ *Одобрено.* Номер: *#{number}* | Всего: {total}",
-            parse_mode="Markdown"
+            caption=(query.message.caption or "") + f"\n\n✅ Одобрено. Номер: #{number} | Всего: {total}"
         )
 
     # ── Отклонение — показать причины ──────────
@@ -775,14 +815,12 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db = load_db_sync()
             if target_user_id not in db["pending"]:
                 await query.edit_message_caption(
-                    caption=(query.message.caption or "") + "\n\n⚠️ Уже обработано.",
-                    parse_mode="Markdown"
+                    caption=(query.message.caption or "") + "\n\n⚠️ Уже обработано."
                 )
                 return
 
         await query.edit_message_caption(
-            caption=(query.message.caption or "") + "\n\n❓ *Укажите причину отклонения:*",
-            parse_mode="Markdown",
+            caption=(query.message.caption or "") + "\n\n❓ Укажите причину отклонения:",
             reply_markup=reject_reason_keyboard(target_user_id)
         )
 
@@ -798,8 +836,7 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if target_user_id not in db["pending"]:
                 await query.edit_message_caption(
-                    caption=(query.message.caption or "") + "\n\n⚠️ Уже обработано.",
-                    parse_mode="Markdown"
+                    caption=(query.message.caption or "") + "\n\n⚠️ Уже обработано."
                 )
                 return
 
@@ -808,7 +845,7 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_db_sync(db)
 
         reason_key = f"rejected_{reason_code}"
-        msg = TEXTS[lang].get(reason_key, TEXTS[lang]["rejected_other"])
+        msg = TEXTS[lang].get(reason_key) or TEXTS[lang].get("rejected_other") or TEXTS[lang]["rejected_no5g"]
 
         try:
             await context.bot.send_message(
@@ -821,9 +858,23 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         reason_label = REJECT_REASONS.get(reason_code, reason_code)
         await query.edit_message_caption(
-            caption=(query.message.caption or "") + f"\n\n❌ *Отклонено.* Причина: {reason_label}",
-            parse_mode="Markdown"
+            caption=(query.message.caption or "") + f"\n\n❌ Отклонено. Причина: {reason_label}"
         )
+
+
+async def pending_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка «Показать ещё» под порцией скриншотов на проверке."""
+    query = update.callback_query
+    if query.from_user.id not in ADMIN_IDS:
+        await query.answer("⛔ У вас нет прав.", show_alert=True)
+        return
+    await query.answer()
+    # убираем кнопку у старого сообщения, чтобы не нажимали повторно
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await send_pending_page(context, query.message.chat_id)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -936,6 +987,7 @@ def main():
     app.add_handler(CommandHandler("setdate",   cmd_setdate))
     app.add_handler(CommandHandler("export",    cmd_export))
     app.add_handler(CallbackQueryHandler(admin_decision, pattern="^(approve_|reject_|rejectconfirm_)"))
+    app.add_handler(CallbackQueryHandler(pending_more, pattern="^pendingmore$"))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("|".join(re.escape(b) for b in all_user_btns)), handle_user_menu))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("|".join(re.escape(b) for b in admin_btns)), handle_admin_menu))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_input))
